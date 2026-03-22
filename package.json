@@ -1,0 +1,56 @@
+{
+  "name": "@haivx/tripmind-maps-mcp",
+  "version": "0.1.0",
+  "description": "Travel-focused MCP server wrapping Google Maps API for TripMind",
+  "type": "module",
+  "bin": {
+    "tripmind-maps-mcp": "./build/index.js"
+  },
+  "files": [
+    "build"
+  ],
+  "scripts": {
+    "build": "tsc && chmod 755 build/index.js",
+    "dev": "node --import tsx --watch src/index.ts",
+    "start": "node build/index.js",
+    "start:http": "PORT=3000 node build/index.js --http",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/ --ext .ts",
+    "inspect": "npx @modelcontextprotocol/inspector node build/index.js"
+  },
+  "dependencies": {
+    "@googlemaps/google-maps-services-js": "^3.4.0",
+    "@modelcontextprotocol/sdk": "^1.27.0",
+    "dotenv": "^16.4.0",
+    "express": "^4.21.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "eslint": "^9.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "google-maps",
+    "travel",
+    "geocoding",
+    "claude",
+    "ai"
+  ],
+  "author": "haivx",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/haivx/tripmind-maps-mcp"
+  }
+}

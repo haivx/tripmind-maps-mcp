@@ -1,0 +1,9 @@
+node_modules/
+build/
+dist/
+.env
+.env.local
+*.js.map
+.DS_Store
+coverage/
+.claude/memory/today.md

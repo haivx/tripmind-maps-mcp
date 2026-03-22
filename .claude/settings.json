@@ -1,0 +1,44 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(git push origin main)",
+      "Bash(cat .env)",
+      "Bash(echo $GOOGLE_MAPS_API_KEY)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'FILE=\"$CLAUDE_FILE_PATH\"; if [[ \"$FILE\" == *.env ]] || [[ \"$FILE\" == *.env.local ]]; then echo \"BLOCK: Never write to .env files directly. Use .env.example instead.\" >&2; exit 1; fi'"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write(*.ts|*.tsx)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx tsc --noEmit --pretty 2>&1 | head -20"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'echo \"\\n📋 Session reminder: Did you run tests? Did you update docs if needed?\" >&2'"
+          }
+        ]
+      }
+    ]
+  }
+}
