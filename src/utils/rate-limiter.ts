@@ -41,3 +41,18 @@ class RateLimiter {
 
 /** Singleton rate limiter shared across all tools. */
 export const rateLimiter = new RateLimiter();
+
+/**
+ * Assert that the given key has not exceeded the rate limit.
+ * Throws a descriptive Error if the limit is exceeded.
+ * For stdio mode, use key = "stdio". For HTTP mode, use the client IP.
+ */
+export function assertRateLimit(key: string): void {
+  const result = rateLimiter.checkLimit(key);
+  if (!result.allowed) {
+    const resetIn = Math.ceil((result.reset_at - Date.now()) / 1000);
+    throw new Error(
+      `Rate limit exceeded. ${result.remaining} requests remaining. Resets in ${resetIn}s.`
+    );
+  }
+}

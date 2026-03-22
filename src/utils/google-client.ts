@@ -13,6 +13,68 @@ function getApiKey(): string {
   return key;
 }
 
+// ---------------------------------------------------------------------------
+// Retry helpers
+// ---------------------------------------------------------------------------
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Determine if a thrown error is transient and worth retrying.
+ * Retries on: network errors, HTTP 5xx, HTTP 429 (rate limit), OVER_QUERY_LIMIT, UNKNOWN_ERROR.
+ * Does NOT retry on: 4xx client errors (bad input, invalid key).
+ */
+function isRetryable(err: Error): boolean {
+  const msg = err.message;
+
+  // Network / connection errors
+  if (/ECONNRESET|ETIMEDOUT|ENOTFOUND|ENETUNREACH|ECONNREFUSED/i.test(msg)) return true;
+
+  // HTTP status codes embedded in error message (e.g. "error: 429 Too Many Requests")
+  const statusMatch = msg.match(/:\s*(\d{3})(?:\s|$)/);
+  if (statusMatch) {
+    const code = parseInt(statusMatch[1]!, 10);
+    if (code === 429) return true;
+    if (code >= 500) return true;
+    return false; // 4xx client errors — do not retry
+  }
+
+  // Google Maps API status codes in error message
+  if (msg.includes("OVER_QUERY_LIMIT")) return true;
+  if (msg.includes("UNKNOWN_ERROR")) return true;
+
+  return false;
+}
+
+/**
+ * Retry a fallible async function with exponential backoff.
+ * Backoff: 1 s, 2 s, 4 s (maxRetries = 3 attempts total).
+ * Only retries when `isRetryable` returns true.
+ */
+export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
+  let lastError: Error = new Error("Unknown error");
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (!isRetryable(lastError)) throw lastError;
+      const delay = Math.pow(2, attempt) * 1000;
+      console.error(
+        `[retry] attempt ${attempt + 1}/${maxRetries} failed: ${lastError.message}. Retrying in ${delay}ms...`
+      );
+      await sleep(delay);
+    }
+  }
+  throw lastError;
+}
+
+// ---------------------------------------------------------------------------
+// Geocode
+// ---------------------------------------------------------------------------
+
 /** Input options for geocode/reverse-geocode calls. */
 export interface GeocodeInput {
   address?: string;
@@ -34,31 +96,35 @@ export async function geocode(input: GeocodeInput): Promise<GeocodeResult[]> {
   >["data"]["results"];
 
   if (input.latlng) {
-    const res = await client.reverseGeocode({
-      params: {
-        latlng: input.latlng,
-        language: input.language as Language | undefined,
-        key,
-      },
+    rawResults = await withRetry(async () => {
+      const res = await client.reverseGeocode({
+        params: {
+          latlng: input.latlng!,
+          language: input.language as Language | undefined,
+          key,
+        },
+      });
+      if (res.data.status !== "OK" && res.data.status !== "ZERO_RESULTS") {
+        throw new Error(
+          `Google Reverse Geocoding API error: ${res.data.status}`
+        );
+      }
+      return res.data.results;
     });
-    if (res.data.status !== "OK" && res.data.status !== "ZERO_RESULTS") {
-      throw new Error(
-        `Google Reverse Geocoding API error: ${res.data.status}`
-      );
-    }
-    rawResults = res.data.results;
   } else if (input.address) {
-    const res = await client.geocode({
-      params: {
-        address: input.address,
-        language: input.language as Language | undefined,
-        key,
-      },
+    rawResults = await withRetry(async () => {
+      const res = await client.geocode({
+        params: {
+          address: input.address!,
+          language: input.language as Language | undefined,
+          key,
+        },
+      });
+      if (res.data.status !== "OK" && res.data.status !== "ZERO_RESULTS") {
+        throw new Error(`Google Geocoding API error: ${res.data.status}`);
+      }
+      return res.data.results;
     });
-    if (res.data.status !== "OK" && res.data.status !== "ZERO_RESULTS") {
-      throw new Error(`Google Geocoding API error: ${res.data.status}`);
-    }
-    rawResults = res.data.results;
   } else {
     throw new Error("Either address or latlng must be provided.");
   }
@@ -73,6 +139,10 @@ export async function geocode(input: GeocodeInput): Promise<GeocodeResult[]> {
     types: r.types as string[],
   }));
 }
+
+// ---------------------------------------------------------------------------
+// Search Places
+// ---------------------------------------------------------------------------
 
 /** Input options for Places Text Search. */
 export interface SearchPlacesInput {
@@ -89,20 +159,24 @@ export interface SearchPlacesInput {
  */
 export async function searchPlaces(input: SearchPlacesInput): Promise<PlaceSearchResult[]> {
   const key = getApiKey();
-  const res = await client.textSearch({
-    params: {
-      query: input.query,
-      ...(input.location && { location: input.location }),
-      ...(input.radius && { radius: input.radius }),
-      type: input.type as PlaceType1 | undefined,
-      language: input.language as Language | undefined,
-      key,
-    },
+  const results = await withRetry(async () => {
+    const res = await client.textSearch({
+      params: {
+        query: input.query,
+        ...(input.location && { location: input.location }),
+        ...(input.radius && { radius: input.radius }),
+        type: input.type as PlaceType1 | undefined,
+        language: input.language as Language | undefined,
+        key,
+      },
+    });
+    if (res.data.status !== "OK" && res.data.status !== "ZERO_RESULTS") {
+      throw new Error(`Google Places Text Search error: ${res.data.status}`);
+    }
+    return res.data.results ?? [];
   });
-  if (res.data.status !== "OK" && res.data.status !== "ZERO_RESULTS") {
-    throw new Error(`Google Places Text Search error: ${res.data.status}`);
-  }
-  return (res.data.results ?? []).map((r) => ({
+
+  return results.map((r) => ({
     place_id: r.place_id ?? "",
     name: r.name ?? "",
     formatted_address: r.formatted_address ?? "",
@@ -115,6 +189,10 @@ export async function searchPlaces(input: SearchPlacesInput): Promise<PlaceSearc
   }));
 }
 
+// ---------------------------------------------------------------------------
+// Place Details
+// ---------------------------------------------------------------------------
+
 /** Input options for Place Details lookup. */
 export interface PlaceDetailsInput {
   place_id: string;
@@ -126,6 +204,55 @@ const DEFAULT_DETAIL_FIELDS = [
   "name", "formatted_address", "geometry", "rating",
   "opening_hours", "international_phone_number", "website", "reviews", "types",
 ];
+
+/**
+ * Fetch rich details for a place by place_id.
+ * SKU: Place Details
+ */
+export async function placeDetails(input: PlaceDetailsInput): Promise<PlaceDetailsResult> {
+  const key = getApiKey();
+  const r = await withRetry(async () => {
+    const res = await client.placeDetails({
+      params: {
+        place_id: input.place_id,
+        fields: input.fields ?? DEFAULT_DETAIL_FIELDS,
+        language: input.language as Language | undefined,
+        key,
+      },
+    });
+    if (res.data.status !== "OK") {
+      throw new Error(`Google Place Details error: ${res.data.status}`);
+    }
+    return res.data.result;
+  });
+
+  return {
+    place_id: input.place_id,
+    name: r.name ?? "",
+    formatted_address: r.formatted_address ?? "",
+    location: {
+      lat: r.geometry?.location.lat ?? 0,
+      lng: r.geometry?.location.lng ?? 0,
+    },
+    rating: r.rating,
+    opening_hours: r.opening_hours
+      ? { open_now: r.opening_hours.open_now, weekday_text: r.opening_hours.weekday_text }
+      : undefined,
+    phone: r.international_phone_number,
+    website: r.website,
+    reviews: r.reviews?.map((rev) => ({
+      author_name: rev.author_name,
+      rating: rev.rating,
+      text: rev.text,
+      time: rev.time,
+    })),
+    types: r.types as string[] | undefined,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Directions (Routes API v2)
+// ---------------------------------------------------------------------------
 
 // Internal types for Routes API response (not exported)
 interface RouteApiStep {
@@ -176,21 +303,24 @@ export async function computeRoute(input: ComputeRouteInput): Promise<Directions
     units: "METRIC",
   };
 
-  const res = await fetch(ROUTES_API_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Goog-Api-Key": key,
-      "X-Goog-FieldMask": fieldMask,
-    },
-    body: JSON.stringify(body),
+  const data = await withRetry(async () => {
+    const res = await fetch(ROUTES_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": key,
+        "X-Goog-FieldMask": fieldMask,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Google Routes API error: ${res.status} ${res.statusText}`);
+    }
+
+    return res.json() as Promise<{ routes?: RouteApiRoute[] }>;
   });
 
-  if (!res.ok) {
-    throw new Error(`Google Routes API error: ${res.status} ${res.statusText}`);
-  }
-
-  const data = await res.json() as { routes?: RouteApiRoute[] };
   if (!data.routes || data.routes.length === 0) {
     throw new Error("Google Routes API returned no routes for this request.");
   }
@@ -226,6 +356,10 @@ export async function computeRoute(input: ComputeRouteInput): Promise<Directions
   };
 }
 
+// ---------------------------------------------------------------------------
+// Distance Matrix
+// ---------------------------------------------------------------------------
+
 const TRAVEL_MODE_MAP: Record<string, TravelMode> = {
   DRIVE: TravelMode.driving,
   WALK: TravelMode.walking,
@@ -247,18 +381,20 @@ export async function distanceMatrix(input: DistanceMatrixInput): Promise<Distan
   const key = getApiKey();
   const mode = TRAVEL_MODE_MAP[input.mode ?? "TRANSIT"] ?? TravelMode.transit;
 
-  const res = await client.distancematrix({
-    params: { origins: input.origins, destinations: input.destinations, mode, key },
+  const res = await withRetry(async () => {
+    const r = await client.distancematrix({
+      params: { origins: input.origins, destinations: input.destinations, mode, key },
+    });
+    if (r.data.status !== "OK") {
+      throw new Error(`Google Distance Matrix API error: ${r.data.status}`);
+    }
+    return r.data;
   });
 
-  if (res.data.status !== "OK") {
-    throw new Error(`Google Distance Matrix API error: ${res.data.status}`);
-  }
-
-  const elements = res.data.rows.flatMap((row, rowIdx) =>
+  const elements = res.rows.flatMap((row, rowIdx) =>
     row.elements.map((el, colIdx) => ({
-      origin: res.data.origin_addresses[rowIdx] ?? input.origins[rowIdx] ?? "",
-      destination: res.data.destination_addresses[colIdx] ?? input.destinations[colIdx] ?? "",
+      origin: res.origin_addresses[rowIdx] ?? input.origins[rowIdx] ?? "",
+      destination: res.destination_addresses[colIdx] ?? input.destinations[colIdx] ?? "",
       distance: { text: el.distance?.text ?? "", value: el.distance?.value ?? 0 },
       duration: { text: el.duration?.text ?? "", value: el.duration?.value ?? 0 },
       status: el.status as string,
@@ -267,6 +403,10 @@ export async function distanceMatrix(input: DistanceMatrixInput): Promise<Distan
 
   return { elements };
 }
+
+// ---------------------------------------------------------------------------
+// Timezone
+// ---------------------------------------------------------------------------
 
 export interface TimezoneInput {
   lat: number;
@@ -280,64 +420,24 @@ export interface TimezoneInput {
  */
 export async function timezoneInfo(input: TimezoneInput): Promise<TimezoneResult> {
   const key = getApiKey();
-  const res = await client.timezone({
-    params: {
-      location: { lat: input.lat, lng: input.lng },
-      timestamp: input.timestamp ?? Math.floor(Date.now() / 1000),
-      key,
-    },
+  const data = await withRetry(async () => {
+    const res = await client.timezone({
+      params: {
+        location: { lat: input.lat, lng: input.lng },
+        timestamp: input.timestamp ?? Math.floor(Date.now() / 1000),
+        key,
+      },
+    });
+    if (res.data.status !== "OK") {
+      throw new Error(`Google Timezone API error: ${res.data.status}`);
+    }
+    return res.data;
   });
 
-  if (res.data.status !== "OK") {
-    throw new Error(`Google Timezone API error: ${res.data.status}`);
-  }
-
   return {
-    timezone_id: res.data.timeZoneId,
-    timezone_name: res.data.timeZoneName,
-    utc_offset_seconds: res.data.rawOffset,
-    dst_offset_seconds: res.data.dstOffset,
-  };
-}
-
-/**
- * Fetch rich details for a place by place_id.
- * SKU: Place Details
- */
-export async function placeDetails(input: PlaceDetailsInput): Promise<PlaceDetailsResult> {
-  const key = getApiKey();
-  const res = await client.placeDetails({
-    params: {
-      place_id: input.place_id,
-      fields: input.fields ?? DEFAULT_DETAIL_FIELDS,
-      language: input.language as Language | undefined,
-      key,
-    },
-  });
-  if (res.data.status !== "OK") {
-    throw new Error(`Google Place Details error: ${res.data.status}`);
-  }
-  const r = res.data.result;
-  return {
-    place_id: input.place_id,
-    name: r.name ?? "",
-    formatted_address: r.formatted_address ?? "",
-    location: {
-      lat: r.geometry?.location.lat ?? 0,
-      lng: r.geometry?.location.lng ?? 0,
-    },
-    rating: r.rating,
-    opening_hours: r.opening_hours
-      ? { open_now: r.opening_hours.open_now, weekday_text: r.opening_hours.weekday_text }
-      : undefined,
-    phone: r.international_phone_number,
-    website: r.website,
-    reviews: r.reviews?.map((rev) => ({
-      author_name: rev.author_name,
-      rating: rev.rating,
-      text: rev.text,
-      time: rev.time,
-    })),
-    types: r.types as string[] | undefined,
+    timezone_id: data.timeZoneId,
+    timezone_name: data.timeZoneName,
+    utc_offset_seconds: data.rawOffset,
+    dst_offset_seconds: data.dstOffset,
   };
 }

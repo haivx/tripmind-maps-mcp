@@ -12,12 +12,12 @@ vi.mock("../src/utils/google-client.js", () => ({
 
 import { geocode, searchPlaces, placeDetails, computeRoute, distanceMatrix, timezoneInfo } from "../src/utils/google-client.js";
 import { cache } from "../src/utils/cache.js";
-import { handler as geocodeHandler } from "../src/tools/geocode.js";
-import { handler as searchPlacesHandler } from "../src/tools/search-places.js";
-import { handler as placeDetailsHandler } from "../src/tools/place-details.js";
-import { handler as directionsHandler } from "../src/tools/directions.js";
-import { handler as distanceMatrixHandler } from "../src/tools/distance-matrix.js";
-import { handler as timezoneHandler } from "../src/tools/timezone.js";
+import { handler as geocodeHandler, toolConfig as geocodeConfig } from "../src/tools/geocode.js";
+import { handler as searchPlacesHandler, toolConfig as searchPlacesConfig } from "../src/tools/search-places.js";
+import { handler as placeDetailsHandler, toolConfig as placeDetailsConfig } from "../src/tools/place-details.js";
+import { handler as directionsHandler, toolConfig as directionsConfig } from "../src/tools/directions.js";
+import { handler as distanceMatrixHandler, toolConfig as distanceMatrixConfig } from "../src/tools/distance-matrix.js";
+import { handler as timezoneHandler, toolConfig as timezoneConfig } from "../src/tools/timezone.js";
 
 function parseContent(result: { content: Array<{ type: string; text: string }> }) {
   return JSON.parse(result.content[0]!.text);
@@ -415,5 +415,48 @@ describe("maps_timezone", () => {
 
     expect(result.isError).toBe(true);
     expect(parseContent(result).error).toContain("REQUEST_DENIED");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Annotations — all tools must declare readOnlyHint: true
+// ---------------------------------------------------------------------------
+
+describe("tool annotations", () => {
+  const configs = [
+    { name: "maps_geocode", config: geocodeConfig },
+    { name: "maps_search_places", config: searchPlacesConfig },
+    { name: "maps_place_details", config: placeDetailsConfig },
+    { name: "maps_directions", config: directionsConfig },
+    { name: "maps_distance_matrix", config: distanceMatrixConfig },
+    { name: "maps_timezone", config: timezoneConfig },
+  ];
+
+  for (const { name, config } of configs) {
+    it(`${name} has readOnlyHint: true and destructiveHint: false`, () => {
+      expect(config.annotations?.readOnlyHint).toBe(true);
+      expect(config.annotations?.destructiveHint).toBe(false);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Invalid input — handler-level error paths when required args are missing
+// ---------------------------------------------------------------------------
+
+describe("invalid input", () => {
+  it("maps_search_places returns error when query is missing", async () => {
+    const result = await searchPlacesHandler({} as never);
+    expect(result.isError).toBe(true);
+  });
+
+  it("maps_directions returns error when origin is missing", async () => {
+    const result = await directionsHandler({ destination: "Tokyo Tower" } as never);
+    expect(result.isError).toBe(true);
+  });
+
+  it("maps_distance_matrix returns error when origins is missing", async () => {
+    const result = await distanceMatrixHandler({ destinations: ["Tokyo Tower"] } as never);
+    expect(result.isError).toBe(true);
   });
 });

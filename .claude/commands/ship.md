@@ -34,7 +34,7 @@ Determine bump type:
 - **major**: Breaking changes to tool schemas or server config
 
 ## Publish Steps
-
+0. run pre-commands: eval "$(ssh-agent -s)" & ssh-add ~/.ssh/personal-2026
 1. `npm version <patch|minor|major>`
 2. `git add -A && git commit -m "chore: release vX.Y.Z"`
 3. `git tag vX.Y.Z`
