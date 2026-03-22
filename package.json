@@ -1,6 +1,6 @@
 {
   "name": "@haivx/tripmind-maps-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Travel-focused MCP server wrapping Google Maps API for TripMind",
   "type": "module",
   "bin": {
@@ -33,6 +33,7 @@
     "eslint": "^9.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
+    "typescript-eslint": "^8.57.1",
     "vitest": "^3.0.0"
   },
   "engines": {
