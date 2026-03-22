@@ -48,6 +48,43 @@ export interface PlaceReview {
   time: string;
 }
 
+/** A single step in a route */
+export interface RouteStep {
+  instruction: string;
+  distance: { text: string; value: number };
+  duration: { text: string; value: number };
+}
+
+/** Result from the Routes API (Compute Route) */
+export interface DirectionsResult {
+  summary: string;
+  distance: { text: string; value: number };
+  duration: { text: string; value: number };
+  steps: RouteStep[];
+}
+
+/** A single cell in the distance matrix */
+export interface MatrixElement {
+  origin: string;
+  destination: string;
+  distance: { text: string; value: number };
+  duration: { text: string; value: number };
+  status: string;
+}
+
+/** Result from the Distance Matrix API */
+export interface DistanceMatrixResult {
+  elements: MatrixElement[];
+}
+
+/** Result from the Timezone API */
+export interface TimezoneResult {
+  timezone_id: string;
+  timezone_name: string;
+  utc_offset_seconds: number;
+  dst_offset_seconds: number;
+}
+
 /** Rich place info from Place Details API */
 export interface PlaceDetailsResult {
   place_id: string;

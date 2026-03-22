@@ -5,13 +5,19 @@ vi.mock("../src/utils/google-client.js", () => ({
   geocode: vi.fn(),
   searchPlaces: vi.fn(),
   placeDetails: vi.fn(),
+  computeRoute: vi.fn(),
+  distanceMatrix: vi.fn(),
+  timezoneInfo: vi.fn(),
 }));
 
-import { geocode, searchPlaces, placeDetails } from "../src/utils/google-client.js";
+import { geocode, searchPlaces, placeDetails, computeRoute, distanceMatrix, timezoneInfo } from "../src/utils/google-client.js";
 import { cache } from "../src/utils/cache.js";
 import { handler as geocodeHandler } from "../src/tools/geocode.js";
 import { handler as searchPlacesHandler } from "../src/tools/search-places.js";
 import { handler as placeDetailsHandler } from "../src/tools/place-details.js";
+import { handler as directionsHandler } from "../src/tools/directions.js";
+import { handler as distanceMatrixHandler } from "../src/tools/distance-matrix.js";
+import { handler as timezoneHandler } from "../src/tools/timezone.js";
 
 function parseContent(result: { content: Array<{ type: string; text: string }> }) {
   return JSON.parse(result.content[0]!.text);
@@ -233,5 +239,181 @@ describe("maps_place_details", () => {
 
     expect(result.isError).toBe(true);
     expect(parseContent(result).error).toContain("Place not found");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// maps_directions
+// ---------------------------------------------------------------------------
+
+describe("maps_directions", () => {
+  const mockRoute = {
+    summary: "1.2 km — 15 mins",
+    distance: { text: "1.2 km", value: 1200 },
+    duration: { text: "15 mins", value: 900 },
+    steps: [
+      {
+        instruction: "Head north on Asakusa-dori",
+        distance: { text: "400 m", value: 400 },
+        duration: { text: "5 mins", value: 300 },
+      },
+    ],
+  };
+
+  it("returns a route between two places", async () => {
+    vi.mocked(computeRoute).mockResolvedValue(mockRoute);
+
+    const result = await directionsHandler({ origin: "Senso-ji Temple", destination: "Tokyo Skytree" });
+
+    expect(result.isError).toBeUndefined();
+    expect(parseContent(result)).toEqual(mockRoute);
+    expect(computeRoute).toHaveBeenCalledWith(
+      expect.objectContaining({ origin: "Senso-ji Temple", destination: "Tokyo Skytree", mode: "TRANSIT" })
+    );
+  });
+
+  it("passes explicit travel mode", async () => {
+    vi.mocked(computeRoute).mockResolvedValue(mockRoute);
+
+    await directionsHandler({ origin: "A", destination: "B", mode: "WALK" });
+
+    expect(computeRoute).toHaveBeenCalledWith(expect.objectContaining({ mode: "WALK" }));
+  });
+
+  it("caches result and avoids duplicate API calls", async () => {
+    vi.mocked(computeRoute).mockResolvedValue(mockRoute);
+
+    await directionsHandler({ origin: "Senso-ji Temple", destination: "Tokyo Skytree" });
+    await directionsHandler({ origin: "Senso-ji Temple", destination: "Tokyo Skytree" });
+
+    expect(computeRoute).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns error content on API failure", async () => {
+    vi.mocked(computeRoute).mockRejectedValue(new Error("Routes API error: 403 Forbidden"));
+
+    const result = await directionsHandler({ origin: "A", destination: "B" });
+
+    expect(result.isError).toBe(true);
+    expect(parseContent(result).error).toContain("Routes API error");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// maps_distance_matrix
+// ---------------------------------------------------------------------------
+
+describe("maps_distance_matrix", () => {
+  const mockMatrix = {
+    elements: [
+      {
+        origin: "Shinjuku Station, Tokyo",
+        destination: "Tokyo Tower, Tokyo",
+        distance: { text: "8.2 km", value: 8200 },
+        duration: { text: "28 mins", value: 1680 },
+        status: "OK",
+      },
+      {
+        origin: "Shibuya Station, Tokyo",
+        destination: "Tokyo Tower, Tokyo",
+        distance: { text: "4.1 km", value: 4100 },
+        duration: { text: "18 mins", value: 1080 },
+        status: "OK",
+      },
+    ],
+  };
+
+  it("returns a distance matrix for origins and destinations", async () => {
+    vi.mocked(distanceMatrix).mockResolvedValue(mockMatrix);
+
+    const result = await distanceMatrixHandler({
+      origins: ["Shinjuku Station", "Shibuya Station"],
+      destinations: ["Tokyo Tower"],
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(parseContent(result)).toEqual(mockMatrix);
+    expect(distanceMatrix).toHaveBeenCalledWith(
+      expect.objectContaining({ origins: ["Shinjuku Station", "Shibuya Station"] })
+    );
+  });
+
+  it("defaults mode to TRANSIT", async () => {
+    vi.mocked(distanceMatrix).mockResolvedValue(mockMatrix);
+
+    await distanceMatrixHandler({ origins: ["A"], destinations: ["B"] });
+
+    expect(distanceMatrix).toHaveBeenCalledWith(expect.objectContaining({ mode: "TRANSIT" }));
+  });
+
+  it("caches result and avoids duplicate API calls", async () => {
+    vi.mocked(distanceMatrix).mockResolvedValue(mockMatrix);
+
+    await distanceMatrixHandler({ origins: ["Shinjuku Station"], destinations: ["Tokyo Tower"] });
+    await distanceMatrixHandler({ origins: ["Shinjuku Station"], destinations: ["Tokyo Tower"] });
+
+    expect(distanceMatrix).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns error content on API failure", async () => {
+    vi.mocked(distanceMatrix).mockRejectedValue(new Error("Distance Matrix API error: OVER_DAILY_LIMIT"));
+
+    const result = await distanceMatrixHandler({ origins: ["A"], destinations: ["B"] });
+
+    expect(result.isError).toBe(true);
+    expect(parseContent(result).error).toContain("OVER_DAILY_LIMIT");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// maps_timezone
+// ---------------------------------------------------------------------------
+
+describe("maps_timezone", () => {
+  const mockTimezone = {
+    timezone_id: "Asia/Tokyo",
+    timezone_name: "Japan Standard Time",
+    utc_offset_seconds: 32400,
+    dst_offset_seconds: 0,
+  };
+
+  it("returns timezone info for coordinates", async () => {
+    vi.mocked(timezoneInfo).mockResolvedValue(mockTimezone);
+
+    const result = await timezoneHandler({ latitude: 35.6762, longitude: 139.6503 });
+
+    expect(result.isError).toBeUndefined();
+    expect(parseContent(result)).toEqual(mockTimezone);
+    expect(timezoneInfo).toHaveBeenCalledWith(
+      expect.objectContaining({ lat: 35.6762, lng: 139.6503 })
+    );
+  });
+
+  it("passes explicit timestamp", async () => {
+    vi.mocked(timezoneInfo).mockResolvedValue(mockTimezone);
+
+    await timezoneHandler({ latitude: 35.6762, longitude: 139.6503, timestamp: 1744268400 });
+
+    expect(timezoneInfo).toHaveBeenCalledWith(
+      expect.objectContaining({ timestamp: 1744268400 })
+    );
+  });
+
+  it("caches result and avoids duplicate API calls", async () => {
+    vi.mocked(timezoneInfo).mockResolvedValue(mockTimezone);
+
+    await timezoneHandler({ latitude: 35.6762, longitude: 139.6503 });
+    await timezoneHandler({ latitude: 35.6762, longitude: 139.6503 });
+
+    expect(timezoneInfo).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns error content on API failure", async () => {
+    vi.mocked(timezoneInfo).mockRejectedValue(new Error("Timezone API error: REQUEST_DENIED"));
+
+    const result = await timezoneHandler({ latitude: 0, longitude: 0 });
+
+    expect(result.isError).toBe(true);
+    expect(parseContent(result).error).toContain("REQUEST_DENIED");
   });
 });

@@ -1,5 +1,5 @@
-import { Client, Language, PlaceType1 } from "@googlemaps/google-maps-services-js";
-import type { GeocodeResult, PlaceSearchResult, PlaceDetailsResult } from "../types.js";
+import { Client, Language, PlaceType1, TravelMode } from "@googlemaps/google-maps-services-js";
+import type { GeocodeResult, PlaceSearchResult, PlaceDetailsResult, DirectionsResult, DistanceMatrixResult, TimezoneResult } from "../types.js";
 
 const client = new Client({});
 
@@ -126,6 +126,179 @@ const DEFAULT_DETAIL_FIELDS = [
   "name", "formatted_address", "geometry", "rating",
   "opening_hours", "international_phone_number", "website", "reviews", "types",
 ];
+
+// Internal types for Routes API response (not exported)
+interface RouteApiStep {
+  navigationInstruction?: { instructions?: string };
+  distanceMeters?: number;
+  duration?: string;
+  localizedValues?: { distance?: { text: string }; duration?: { text: string } };
+}
+interface RouteApiRoute {
+  distanceMeters?: number;
+  duration?: string;
+  localizedValues?: { distance?: { text: string }; duration?: { text: string } };
+  legs?: Array<{ steps?: RouteApiStep[] }>;
+}
+
+const ROUTES_API_URL = "https://routes.googleapis.com/directions/v2:computeRoutes";
+
+export interface ComputeRouteInput {
+  origin: string;
+  destination: string;
+  mode?: "DRIVE" | "WALK" | "TRANSIT" | "BICYCLE";
+  departure_time?: string;
+}
+
+/**
+ * Compute a route between two points using the Google Routes API.
+ * SKU: Routes API — Compute Routes
+ * Field mask: routes.distanceMeters,routes.duration,routes.localizedValues,routes.legs.steps
+ */
+export async function computeRoute(input: ComputeRouteInput): Promise<DirectionsResult> {
+  const key = getApiKey();
+  const fieldMask = [
+    "routes.distanceMeters",
+    "routes.duration",
+    "routes.localizedValues",
+    "routes.legs.steps.navigationInstruction",
+    "routes.legs.steps.distanceMeters",
+    "routes.legs.steps.duration",
+    "routes.legs.steps.localizedValues",
+  ].join(",");
+
+  const body = {
+    origin: { address: input.origin },
+    destination: { address: input.destination },
+    travelMode: input.mode ?? "TRANSIT",
+    ...(input.departure_time && { departureTime: input.departure_time }),
+    computeAlternativeRoutes: false,
+    units: "METRIC",
+  };
+
+  const res = await fetch(ROUTES_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Goog-Api-Key": key,
+      "X-Goog-FieldMask": fieldMask,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Google Routes API error: ${res.status} ${res.statusText}`);
+  }
+
+  const data = await res.json() as { routes?: RouteApiRoute[] };
+  if (!data.routes || data.routes.length === 0) {
+    throw new Error("Google Routes API returned no routes for this request.");
+  }
+
+  const route = data.routes[0]!;
+  const distanceM = route.distanceMeters ?? 0;
+  const durationSec = parseInt((route.duration ?? "0s").replace("s", ""), 10);
+  const steps = route.legs?.[0]?.steps ?? [];
+
+  return {
+    summary: route.localizedValues?.distance?.text
+      ? `${route.localizedValues.distance.text} — ${route.localizedValues.duration?.text ?? ""}`
+      : `${(distanceM / 1000).toFixed(1)} km`,
+    distance: {
+      text: route.localizedValues?.distance?.text ?? `${(distanceM / 1000).toFixed(1)} km`,
+      value: distanceM,
+    },
+    duration: {
+      text: route.localizedValues?.duration?.text ?? `${Math.round(durationSec / 60)} mins`,
+      value: durationSec,
+    },
+    steps: steps.map((s) => ({
+      instruction: s.navigationInstruction?.instructions ?? "",
+      distance: {
+        text: s.localizedValues?.distance?.text ?? `${s.distanceMeters ?? 0} m`,
+        value: s.distanceMeters ?? 0,
+      },
+      duration: {
+        text: s.localizedValues?.duration?.text ?? "",
+        value: parseInt((s.duration ?? "0s").replace("s", ""), 10),
+      },
+    })),
+  };
+}
+
+const TRAVEL_MODE_MAP: Record<string, TravelMode> = {
+  DRIVE: TravelMode.driving,
+  WALK: TravelMode.walking,
+  TRANSIT: TravelMode.transit,
+  BICYCLE: TravelMode.bicycling,
+};
+
+export interface DistanceMatrixInput {
+  origins: string[];
+  destinations: string[];
+  mode?: "DRIVE" | "WALK" | "TRANSIT" | "BICYCLE";
+}
+
+/**
+ * Calculate travel distances between multiple origins and destinations.
+ * SKU: Distance Matrix API
+ */
+export async function distanceMatrix(input: DistanceMatrixInput): Promise<DistanceMatrixResult> {
+  const key = getApiKey();
+  const mode = TRAVEL_MODE_MAP[input.mode ?? "TRANSIT"] ?? TravelMode.transit;
+
+  const res = await client.distancematrix({
+    params: { origins: input.origins, destinations: input.destinations, mode, key },
+  });
+
+  if (res.data.status !== "OK") {
+    throw new Error(`Google Distance Matrix API error: ${res.data.status}`);
+  }
+
+  const elements = res.data.rows.flatMap((row, rowIdx) =>
+    row.elements.map((el, colIdx) => ({
+      origin: res.data.origin_addresses[rowIdx] ?? input.origins[rowIdx] ?? "",
+      destination: res.data.destination_addresses[colIdx] ?? input.destinations[colIdx] ?? "",
+      distance: { text: el.distance?.text ?? "", value: el.distance?.value ?? 0 },
+      duration: { text: el.duration?.text ?? "", value: el.duration?.value ?? 0 },
+      status: el.status as string,
+    }))
+  );
+
+  return { elements };
+}
+
+export interface TimezoneInput {
+  lat: number;
+  lng: number;
+  timestamp?: number;
+}
+
+/**
+ * Look up timezone info for a coordinate.
+ * SKU: Time Zone API
+ */
+export async function timezoneInfo(input: TimezoneInput): Promise<TimezoneResult> {
+  const key = getApiKey();
+  const res = await client.timezone({
+    params: {
+      location: { lat: input.lat, lng: input.lng },
+      timestamp: input.timestamp ?? Math.floor(Date.now() / 1000),
+      key,
+    },
+  });
+
+  if (res.data.status !== "OK") {
+    throw new Error(`Google Timezone API error: ${res.data.status}`);
+  }
+
+  return {
+    timezone_id: res.data.timeZoneId,
+    timezone_name: res.data.timeZoneName,
+    utc_offset_seconds: res.data.rawOffset,
+    dst_offset_seconds: res.data.dstOffset,
+  };
+}
 
 /**
  * Fetch rich details for a place by place_id.
