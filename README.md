@@ -39,6 +39,15 @@ There are generic Google Maps MCP servers available (like `@cablate/mcp-google-m
 
 ### Installation
 
+**Via npm (recommended):**
+
+```bash
+npm install -g @haivx/tripmind-maps-mcp
+# or use directly with npx (no install needed)
+```
+
+**From source:**
+
 ```bash
 git clone https://github.com/haivx/tripmind-maps-mcp.git
 cd tripmind-maps-mcp
@@ -50,20 +59,18 @@ npm run build
 
 ### Use with Claude Code
 
-Add to your project's `.claude/settings.json` or run:
-
 ```bash
-claude mcp add tripmind-maps -- node /path/to/tripmind-maps-mcp/build/index.js
+claude mcp add tripmind-maps -- npx -y @haivx/tripmind-maps-mcp
 ```
 
-Or manually add to config:
+Or manually add to your project's `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "tripmind-maps": {
-      "command": "node",
-      "args": ["./tripmind-maps-mcp/build/index.js"],
+      "command": "npx",
+      "args": ["-y", "@haivx/tripmind-maps-mcp"],
       "env": {
         "GOOGLE_MAPS_API_KEY": "${env:GOOGLE_MAPS_API_KEY}"
       }
